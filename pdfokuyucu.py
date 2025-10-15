@@ -9,7 +9,7 @@ import pandas as pd
 import sv_ttk  # Modern tema için
 
 # --- Backend Ayarları ---
-BASE_URL = "http://localhost:8080"
+BASE_URL = "https://isiyer-app-a98cc9d8425a.herokuapp.com"
 YARDS_API_URL = f"{BASE_URL}/api/yards"
 PRODUCTS_API_URL = f"{BASE_URL}/api/products"
 santiyeler_map = {}
