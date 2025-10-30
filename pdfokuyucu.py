@@ -107,7 +107,7 @@ def create_fatura_tab(tab):
     tree_frame.pack(fill="both", expand=True)
     tree = ttk.Treeview(tree_frame, columns=("h_kod", "h_aciklama", "miktar", "birim"), show="headings")
     tree.heading("h_kod", text="Hizmet Kodu"); tree.column("h_kod", width=150, anchor="w")
-    tree.heading("h_aciklama", text="Hizmet Açıklaması"); tree.column("h_aciklama", width=450, anchor="w")
+    tree.heading("h_aciklama", text="Mal Hizmet"); tree.column("h_aciklama", width=450, anchor="w")
     tree.heading("miktar", text="Miktar"); tree.column("miktar", width=100, anchor="center")
     tree.heading("birim", text="Birim"); tree.column("birim", width=100, anchor="center")
     tree.tag_configure('oddrow', background='#F0F0F0'); tree.tag_configure('evenrow', background='white')
@@ -116,25 +116,58 @@ def create_fatura_tab(tab):
     scrollbar.pack(side="right", fill="y")
     tree.pack(side="left", fill="both", expand=True)
 
+    # --- PDF OKUMA FONKSİYONU YENİ FATURAYA GÖRE GÜNCELLENDİ ---
+    # --- PDF OKUMA FONKSİYONU HER İKİ FATURAYI DA DESTEKLEYECEK ŞEKİLDE GÜNCELLENDİ ---
     def pdf_oku_ve_doldur():
         dosya_yolu = filedialog.askopenfilename(title="Fatura PDF'ini Seçin", filetypes=[("PDF Dosyaları", "*.pdf")])
         if not dosya_yolu: return
         for i in tree.get_children(): tree.delete(i)
+        
         try:
             with pdfplumber.open(dosya_yolu) as pdf:
                 sayfa = pdf.pages[0]; tablolar = sayfa.extract_tables(); hedef_tablo = None
+                
+                kod_idx, aciklama1_idx, aciklama2_idx, miktar_idx = -1, -1, -1, -1
+
+                # SADECE YENİ FATURA FORMATINI (ZRY2025...) ARA
                 for tablo in tablolar:
                     if tablo:
                         baslik_metni = " ".join(filter(None, tablo[0])).replace('\n', ' ')
-                        if "Malzeme/Hizmet Kodu" in baslik_metni and "KDV Oran" in baslik_metni:
-                            hedef_tablo = tablo; break
+                        basliklar = [str(baslik).replace('\n', ' ') for baslik in tablo[0]]
+                        
+                        try:
+                            # Yeni PDF'in başlıklarını ara
+                            kod_idx = basliklar.index("Ürün Kodu")
+                            aciklama1_idx = basliklar.index("Mal Hizmet")
+                            aciklama2_idx = basliklar.index("Açıklama")
+                            miktar_idx = basliklar.index("Miktar")
+                            hedef_tablo = tablo
+                            break # Tabloyu bulduk, döngüden çık
+                        except ValueError:
+                            continue # Bu tablo uymuyor, sonraki tabloya bak
+
                 if not hedef_tablo:
-                    messagebox.showerror("Hata", "Fatura kalemlerini içeren ana tablo bulunamadı."); return
+                    # Artık sadece bu formatı aradığımız için hata mesajı net
+                    messagebox.showerror("Hata", "Fatura formatı tanınamadı. Lütfen 'Ürün Kodu', 'Mal Hizmet', 'Açıklama' ve 'Miktar' sütunlarını içeren bir PDF yükleyin."); 
+                    return
+
+                # Verileri oku
                 for i, satir_data in enumerate(range(1, len(hedef_tablo))):
                     satir = hedef_tablo[satir_data]
-                    hizmet_kodu, hizmet_aciklamasi, miktar_ham = satir[1], satir[2], satir[4]
+                    
+                    # Sütunları indekslerine göre al
+                    hizmet_kodu = satir[kod_idx]
+                    miktar_ham = satir[miktar_idx]
+                    
+                    # İKİ AÇIKLAMA SÜTUNUNU ("Mal Hizmet" ve "Açıklama") BİRLEŞTİR
+                    aciklama_ana = satir[aciklama1_idx] if satir[aciklama1_idx] else ""
+                    aciklama_detay = satir[aciklama2_idx] if satir[aciklama2_idx] else ""
+                    hizmet_aciklamasi = (aciklama_ana + " " + aciklama_detay).strip()
+
                     if hizmet_kodu and hizmet_aciklamasi and miktar_ham:
                         miktar_ham = miktar_ham.replace('\n', ' ').strip()
+                        
+                        # Miktar ve Birim ayırma
                         eslesme = re.match(r"([\d.,]+)\s*([a-zA-Z]+)", miktar_ham)
                         sayisal_miktar, birim = ("", "")
                         if eslesme:
@@ -142,12 +175,14 @@ def create_fatura_tab(tab):
                             if birim_kisaltma.upper() == 'M': birim = "Metre"
                             elif birim_kisaltma.upper() == 'ADET': birim = "Adet"
                             else: birim = birim_kisaltma
-                        else: sayisal_miktar = miktar_ham
+                        else: 
+                            sayisal_miktar = miktar_ham
+                        
                         tag = 'evenrow' if i % 2 == 0 else 'oddrow'
                         tree.insert("", "end", values=(hizmet_kodu.replace('\n', ' '), hizmet_aciklamasi.replace('\n', ' '), sayisal_miktar, birim), tags=(tag,))
         except Exception as e:
             messagebox.showerror("Hata", f"PDF işlenirken bir hata oluştu: {e}")
-
+    # --- VERİ KAYDETME FONKSİYONU (Aynı kaldı) ---
     def verileri_kaydet_tek_tek():
         secili_santiye_ismi = santiye_secimi_cb.get()
         if not secili_santiye_ismi: messagebox.showwarning("Eksik Bilgi", "Lütfen bir şantiye seçin."); return
@@ -202,7 +237,7 @@ def create_sorgu_tab(tab):
     tree_frame.pack(fill="both", expand=True)
     tree = ttk.Treeview(tree_frame, columns=("code", "description", "amount", "unit"), show="headings")
     tree.heading("code", text="Ürün Kodu"); tree.column("code", width=150, anchor="w")
-    tree.heading("description", text="Açıklama"); tree.column("description", width=450, anchor="w")
+    tree.heading("description", text="Mal Hizmet"); tree.column("description", width=450, anchor="w")
     tree.heading("amount", text="Miktar"); tree.column("amount", width=100, anchor="center")
     tree.heading("unit", text="Birim"); tree.column("unit", width=100, anchor="center")
     tree.tag_configure('oddrow', background='#F0F0F0'); tree.tag_configure('evenrow', background='white')
