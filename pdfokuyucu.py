@@ -6,14 +6,13 @@ import re
 import requests
 import json
 import pandas as pd
-import sv_ttk  # Modern tema için
+import sv_ttk
 
 # --- Backend Ayarları ---
 BASE_URL = "https://isiyer-app-a98cc9d8425a.herokuapp.com"
 YARDS_API_URL = f"{BASE_URL}/api/yards"
 PRODUCTS_API_URL = f"{BASE_URL}/api/products"
 santiyeler_map = {}
-# YENİ: Tüm Combobox'ların referansını tutmak için bir liste
 combobox_references = []
 
 # --- GENEL FONKSİYONLAR ---
@@ -40,7 +39,7 @@ def santiyeleri_getir(combobox_widget):
         messagebox.showerror("Bağlantı Hatası", f"Sunucuya bağlanılamadı: {e}")
         return False
 
-# --- YENİ ŞANTİYE EKLEME DİYALOG PENCERESİ ---
+# --- YENİ ŞANTİYE EKLEME ---
 
 def open_add_yard_dialog():
     dialog = tk.Toplevel(root)
@@ -71,10 +70,9 @@ def open_add_yard_dialog():
             headers = {'Content-Type': 'application/json'}
             response = requests.post(url, data=json.dumps(payload), headers=headers)
 
-            if response.status_code == 201: # Created
+            if response.status_code == 201:
                 messagebox.showinfo("Başarılı", f"'{yard_name}' şantiyesi başarıyla eklendi.", parent=dialog)
                 dialog.destroy()
-                # Başarılı eklemeden sonra TÜM şantiye listelerini yenile
                 for cb in combobox_references:
                     santiyeleri_getir(cb)
             else:
@@ -86,7 +84,7 @@ def open_add_yard_dialog():
     button_frame.grid(row=1, column=0, columnspan=2, pady=(20, 0), sticky="e")
     ttk.Button(button_frame, text="Kaydet", command=save_new_yard, style='Accent.TButton').pack()
 
-# --- SEKME 1: FATURA GİRİŞ ARAYÜZÜNÜ OLUŞTURAN FONKSİYON ---
+# --- SEKME 1: FATURA GİRİŞİ ---
 
 def create_fatura_tab(tab):
     main_frame = ttk.Frame(tab, padding="10")
@@ -100,115 +98,137 @@ def create_fatura_tab(tab):
     cb_frame.grid(row=0, column=1, pady=5, sticky="ew")
     santiye_secimi_cb = ttk.Combobox(cb_frame, state="readonly")
     santiye_secimi_cb.pack(side="left", fill="x", expand=True)
-    combobox_references.append(santiye_secimi_cb) # Yenileme için referansı listeye ekle
+    combobox_references.append(santiye_secimi_cb)
     ttk.Button(cb_frame, text="+", width=3, command=open_add_yard_dialog).pack(side="left", padx=(5,0))
     
     tree_frame = ttk.Frame(main_frame)
     tree_frame.pack(fill="both", expand=True)
-    tree = ttk.Treeview(tree_frame, columns=("h_kod", "h_aciklama", "miktar", "birim"), show="headings")
-    tree.heading("h_kod", text="Hizmet Kodu"); tree.column("h_kod", width=150, anchor="w")
-    tree.heading("h_aciklama", text="Mal Hizmet"); tree.column("h_aciklama", width=450, anchor="w")
+    
+    # Sütunlar: code, mal_hizmet, miktar, birim
+    tree = ttk.Treeview(tree_frame, columns=("code", "mal_hizmet", "miktar", "birim"), show="headings")
+    tree.heading("code", text="Mal Kodu"); tree.column("code", width=150, anchor="w")
+    tree.heading("mal_hizmet", text="Mal"); tree.column("mal_hizmet", width=450, anchor="w")
     tree.heading("miktar", text="Miktar"); tree.column("miktar", width=100, anchor="center")
     tree.heading("birim", text="Birim"); tree.column("birim", width=100, anchor="center")
-    tree.tag_configure('oddrow', background='#F0F0F0'); tree.tag_configure('evenrow', background='white')
+    tree.tag_configure('oddrow', background='#F0F0F0')
+    tree.tag_configure('evenrow', background='white')
+    
     scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
     tree.configure(yscrollcommand=scrollbar.set)
     scrollbar.pack(side="right", fill="y")
     tree.pack(side="left", fill="both", expand=True)
 
-    # --- PDF OKUMA FONKSİYONU YENİ FATURAYA GÖRE GÜNCELLENDİ ---
-    # --- PDF OKUMA FONKSİYONU HER İKİ FATURAYI DA DESTEKLEYECEK ŞEKİLDE GÜNCELLENDİ ---
+    # --- PDF OKUMA (ZRI FORMATI - Mal Kodu ve Miktar Arası Okuma) ---
     def pdf_oku_ve_doldur():
-        dosya_yolu = filedialog.askopenfilename(title="Fatura PDF'ini Seçin", filetypes=[("PDF Dosyaları", "*.pdf")])
+        dosya_yolu = filedialog.askopenfilename(title="PDF Seçin", filetypes=[("PDF Dosyaları", "*.pdf")])
         if not dosya_yolu: return
         for i in tree.get_children(): tree.delete(i)
         
         try:
             with pdfplumber.open(dosya_yolu) as pdf:
-                sayfa = pdf.pages[0]; tablolar = sayfa.extract_tables(); hedef_tablo = None
+                sayfa = pdf.pages[0]
+                tablolar = sayfa.extract_tables()
+                hedef_tablo = None
                 
-                kod_idx, aciklama1_idx, aciklama2_idx, miktar_idx = -1, -1, -1, -1
+                kod_idx = -1
+                miktar_idx = -1
 
-                # SADECE YENİ FATURA FORMATINI (ZRY2025...) ARA
                 for tablo in tablolar:
                     if tablo:
-                        baslik_metni = " ".join(filter(None, tablo[0])).replace('\n', ' ')
-                        basliklar = [str(baslik).replace('\n', ' ') for baslik in tablo[0]]
-                        
-                        try:
-                            # Yeni PDF'in başlıklarını ara
-                            kod_idx = basliklar.index("Ürün Kodu")
-                            aciklama1_idx = basliklar.index("Mal Hizmet")
-                            aciklama2_idx = basliklar.index("Açıklama")
+                        basliklar = [str(b).replace('\n', ' ').strip() for b in tablo[0]]
+                        if "Miktar" in basliklar:
                             miktar_idx = basliklar.index("Miktar")
-                            hedef_tablo = tablo
-                            break # Tabloyu bulduk, döngüden çık
-                        except ValueError:
-                            continue # Bu tablo uymuyor, sonraki tabloya bak
-
+                            if "Mal Kodu" in basliklar:
+                                kod_idx = basliklar.index("Mal Kodu")
+                                hedef_tablo = tablo
+                                break
+                            elif "Ürün Kodu" in basliklar:
+                                kod_idx = basliklar.index("Ürün Kodu")
+                                hedef_tablo = tablo
+                                break
+                
                 if not hedef_tablo:
-                    # Artık sadece bu formatı aradığımız için hata mesajı net
-                    messagebox.showerror("Hata", "Fatura formatı tanınamadı. Lütfen 'Ürün Kodu', 'Mal Hizmet', 'Açıklama' ve 'Miktar' sütunlarını içeren bir PDF yükleyin."); 
+                    messagebox.showerror("Hata", "Uygun tablo bulunamadı. 'Mal Kodu' ve 'Miktar' sütunları gerekli.")
                     return
 
-                # Verileri oku
                 for i, satir_data in enumerate(range(1, len(hedef_tablo))):
                     satir = hedef_tablo[satir_data]
-                    
-                    # Sütunları indekslerine göre al
-                    hizmet_kodu = satir[kod_idx]
-                    miktar_ham = satir[miktar_idx]
-                    
-                    # İKİ AÇIKLAMA SÜTUNUNU ("Mal Hizmet" ve "Açıklama") BİRLEŞTİR
-                    aciklama_ana = satir[aciklama1_idx] if satir[aciklama1_idx] else ""
-                    aciklama_detay = satir[aciklama2_idx] if satir[aciklama2_idx] else ""
-                    hizmet_aciklamasi = (aciklama_ana + " " + aciklama_detay).strip()
+                    if len(satir) <= max(kod_idx, miktar_idx): continue
 
-                    if hizmet_kodu and hizmet_aciklamasi and miktar_ham:
-                        miktar_ham = miktar_ham.replace('\n', ' ').strip()
+                    mal_kodu = satir[kod_idx]
+                    miktar_ham = satir[miktar_idx]
+
+                    # Mal Kodu ile Miktar arasındaki her şeyi "Mal" olarak al
+                    aradaki_sutunlar = satir[kod_idx+1 : miktar_idx]
+                    mal_adi_listesi = [str(x).replace('\n', ' ').strip() for x in aradaki_sutunlar if x is not None and str(x).strip() != ""]
+                    mal_adi = " ".join(mal_adi_listesi)
+
+                    if mal_kodu and mal_adi and miktar_ham:
+                        mal_kodu = str(mal_kodu).replace('\n', ' ').strip()
+                        miktar_ham = str(miktar_ham).replace('\n', ' ').strip()
                         
-                        # Miktar ve Birim ayırma
                         eslesme = re.match(r"([\d.,]+)\s*([a-zA-Z]+)", miktar_ham)
                         sayisal_miktar, birim = ("", "")
+                        
                         if eslesme:
-                            sayisal_miktar, birim_kisaltma = eslesme.group(1), eslesme.group(2)
-                            if birim_kisaltma.upper() == 'M': birim = "Metre"
-                            elif birim_kisaltma.upper() == 'ADET': birim = "Adet"
-                            else: birim = birim_kisaltma
+                            sayisal_miktar = eslesme.group(1)
+                            birim_kisaltma = eslesme.group(2)
+                            if birim_kisaltma.upper() in ['M', 'MT', 'METRE']: birim = "METRE"
+                            elif birim_kisaltma.upper() in ['AD', 'ADET']: birim = "ADET"
+                            else: birim = birim_kisaltma.upper()
                         else: 
                             sayisal_miktar = miktar_ham
                         
                         tag = 'evenrow' if i % 2 == 0 else 'oddrow'
-                        tree.insert("", "end", values=(hizmet_kodu.replace('\n', ' '), hizmet_aciklamasi.replace('\n', ' '), sayisal_miktar, birim), tags=(tag,))
+                        tree.insert("", "end", values=(mal_kodu, mal_adi, sayisal_miktar, birim), tags=(tag,))
+        
         except Exception as e:
-            messagebox.showerror("Hata", f"PDF işlenirken bir hata oluştu: {e}")
-    # --- VERİ KAYDETME FONKSİYONU (Aynı kaldı) ---
+            messagebox.showerror("Hata", f"PDF işlenirken hata: {e}")
+
+    # --- VERİ KAYDETME (GÜNCELLENDİ: HEM malHizmet HEM description DOLACAK) ---
     def verileri_kaydet_tek_tek():
         secili_santiye_ismi = santiye_secimi_cb.get()
         if not secili_santiye_ismi: messagebox.showwarning("Eksik Bilgi", "Lütfen bir şantiye seçin."); return
         secili_santiye_id = santiyeler_map.get(secili_santiye_ismi)
         if not tree.get_children(): messagebox.showwarning("Eksik Bilgi", "Kaydedilecek veri bulunmuyor."); return
-        basarili_kayit, hatali_kayit = 0, 0
-        toplam_kayit = len(tree.get_children())
+        
+        basarili, hatali = 0, 0
+        toplam = len(tree.get_children())
+        
         for row_id in tree.get_children():
             item = tree.item(row_id)['values']
+            # item[0] -> code
+            # item[1] -> mal (PDF'ten okunan)
+            # item[2] -> amount
+            # item[3] -> unit
+            
             try:
                 miktar_sayi = int(str(item[2]).replace('.', '').replace(',', ''))
-            except ValueError: hatali_kayit += 1; continue
-            birim_str = str(item[3]).upper(); birim_enum = "ADET"
-            if birim_str == "METRE": birim_enum = "METRE"
-            elif birim_str == "ADET": birim_enum = "ADET"
-            gonderilecek_tek_urun = {"code": item[0], "description": item[1], "amount": miktar_sayi, "unit": birim_enum}
+            except ValueError: hatali += 1; continue
+            
+            # --- İŞTE BURASI DEĞİŞTİ ---
+            # Java tarafında CreateProductRequest { code, malHizmet, description, ... } bekliyor.
+            # Biz PDF'teki "Mal" verisini hem 'malHizmet'e hem de 'description'a gönderiyoruz.
+            payload = {
+                "code": str(item[0]),        
+                "malHizmet": str(item[1]),   # Mal adı -> malHizmet'e
+                "description": str(item[1]), # Mal adı -> description'a (Artık "-" değil)
+                "amount": miktar_sayi,
+                "unit": str(item[3]).upper()
+            }
+            
             try:
                 url = f"{PRODUCTS_API_URL}/yards/{secili_santiye_id}/products"
                 headers = {'Content-Type': 'application/json'}
-                response = requests.post(url, data=json.dumps(gonderilecek_tek_urun), headers=headers)
-                if response.status_code in [200, 201]: basarili_kayit += 1
-                else: hatali_kayit += 1
-            except requests.exceptions.RequestException: messagebox.showerror("Bağlantı Hatası", "Sunucuya bağlanılamadı."); return
-        messagebox.showinfo("İşlem Tamamlandı", f"Toplam {toplam_kayit} üründen:\nBaşarıyla kaydedilen: {basarili_kayit}\nHatalı: {hatali_kayit}")
-        if basarili_kayit > 0:
-            for i in tree.get_children(): tree.delete(i)
+                response = requests.post(url, data=json.dumps(payload), headers=headers)
+                if response.status_code in [200, 201]: basarili += 1
+                else: hatali += 1
+            except requests.exceptions.RequestException: 
+                messagebox.showerror("Bağlantı Hatası", "Sunucuya ulaşılamadı."); return
+        
+        messagebox.showinfo("Sonuç", f"Toplam: {toplam}\nBaşarılı: {basarili}\nHatalı: {hatali}")
+        if basarili > 0: 
+             for i in tree.get_children(): tree.delete(i)
 
     button_group = ttk.Frame(top_frame)
     button_group.grid(row=0, column=2, padx=(20, 0), pady=5, sticky="e")
@@ -216,7 +236,7 @@ def create_fatura_tab(tab):
     ttk.Button(button_group, text="Verileri Kaydet", command=verileri_kaydet_tek_tek).pack(side="left")
     santiyeleri_getir(santiye_secimi_cb)
 
-# --- SEKME 2: ŞANTİYE SORGULAMA ARAYÜZÜNÜ OLUŞTURAN FONKSİYON ---
+# --- SEKME 2: ŞANTİYE SORGULAMA ---
 
 def create_sorgu_tab(tab):
     main_frame = ttk.Frame(tab, padding="10")
@@ -230,17 +250,28 @@ def create_sorgu_tab(tab):
     cb_frame.grid(row=0, column=1, pady=5, sticky="ew")
     santiye_secimi_cb = ttk.Combobox(cb_frame, state="readonly")
     santiye_secimi_cb.pack(side="left", fill="x", expand=True)
-    combobox_references.append(santiye_secimi_cb) # Yenileme için referansı listeye ekle
+    combobox_references.append(santiye_secimi_cb)
     ttk.Button(cb_frame, text="+", width=3, command=open_add_yard_dialog).pack(side="left", padx=(5,0))
     
     tree_frame = ttk.Frame(main_frame)
     tree_frame.pack(fill="both", expand=True)
-    tree = ttk.Treeview(tree_frame, columns=("code", "description", "amount", "unit"), show="headings")
-    tree.heading("code", text="Ürün Kodu"); tree.column("code", width=150, anchor="w")
-    tree.heading("description", text="Mal Hizmet"); tree.column("description", width=450, anchor="w")
-    tree.heading("amount", text="Miktar"); tree.column("amount", width=100, anchor="center")
-    tree.heading("unit", text="Birim"); tree.column("unit", width=100, anchor="center")
-    tree.tag_configure('oddrow', background='#F0F0F0'); tree.tag_configure('evenrow', background='white')
+    tree = ttk.Treeview(tree_frame, columns=("code", "mal_hizmet", "miktar", "birim"), show="headings")
+    
+    tree.heading("code", text="Mal Kodu")
+    tree.column("code", width=150, anchor="w")
+    
+    tree.heading("mal_hizmet", text="Mal")
+    tree.column("mal_hizmet", width=450, anchor="w")
+    
+    tree.heading("miktar", text="Miktar")
+    tree.column("miktar", width=100, anchor="center")
+    
+    tree.heading("birim", text="Birim")
+    tree.column("birim", width=100, anchor="center")
+    
+    tree.tag_configure('oddrow', background='#F0F0F0')
+    tree.tag_configure('evenrow', background='white')
+    
     scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
     tree.configure(yscrollcommand=scrollbar.set)
     scrollbar.pack(side="right", fill="y")
@@ -260,7 +291,11 @@ def create_sorgu_tab(tab):
                 if not urunler: messagebox.showinfo("Bilgi", "Bu şantiyeye ait ürün bulunamadı.");
                 for i, urun in enumerate(urunler):
                     tag = 'evenrow' if i % 2 == 0 else 'oddrow'
-                    tree.insert("", "end", values=(urun['code'], urun['description'], urun['amount'], urun['unit']), tags=(tag,))
+                    p_code = urun.get('code', '')
+                    p_mal = urun.get('malHizmet', '') 
+                    p_amount = urun.get('amount', 0)
+                    p_unit = urun.get('unit', '')
+                    tree.insert("", "end", values=(p_code, p_mal, p_amount, p_unit), tags=(tag,))
             else:
                 messagebox.showerror("Hata", f"Veriler alınamadı. Sunucu: {response.status_code}\n{response.text}")
         except requests.exceptions.RequestException as e:
@@ -271,17 +306,17 @@ def create_sorgu_tab(tab):
         try:
             dosya_yolu = filedialog.asksaveasfilename(
                 initialfile=f'{santiye_secimi_cb.get()}_urun_listesi.xlsx',
-                defaultextension=".xlsx", filetypes=[("Excel Dosyası", "*.xlsx"), ("Tüm Dosyalar", "*.*")])
+                defaultextension=".xlsx", filetypes=[("Excel Dosyası", "*.xlsx")])
             if not dosya_yolu: return
             veri_listesi = []
             for row_id in tree.get_children():
                 item = tree.item(row_id)['values']
-                veri_listesi.append({'Ürün Kodu': item[0], 'Açıklama': item[1], 'Miktar': item[2], 'Birim': item[3]})
+                veri_listesi.append({'Mal Kodu': item[0], 'Mal': item[1], 'Miktar': item[2], 'Birim': item[3]})
             df = pd.DataFrame(veri_listesi)
             df.to_excel(dosya_yolu, index=False)
-            messagebox.showinfo("Başarılı", f"Veriler başarıyla şu dosyaya aktarıldı:\n{dosya_yolu}")
+            messagebox.showinfo("Başarılı", f"Excel kaydedildi:\n{dosya_yolu}")
         except Exception as e:
-            messagebox.showerror("Hata", f"Excel'e aktarılırken bir hata oluştu:\n{e}")
+            messagebox.showerror("Hata", f"Excel hatası:\n{e}")
 
     button_group = ttk.Frame(top_frame)
     button_group.grid(row=0, column=2, padx=(20, 0))
@@ -289,27 +324,20 @@ def create_sorgu_tab(tab):
     ttk.Button(button_group, text="Excel'e Aktar", command=verileri_excele_aktar).pack(side="left")
     santiyeleri_getir(santiye_secimi_cb)
 
-# --- ANA UYGULAMA PENCERESİ VE SEKMELER ---
+# --- ANA UYGULAMA ---
 if __name__ == "__main__":
     root = tk.Tk()
     root.title("Veri Yönetim Sistemi")
     root.geometry("950x700")
-
     sv_ttk.set_theme("light")
-
     style = ttk.Style()
     style.configure("Treeview.Heading", font=("Segoe UI", 10, 'bold'))
-
     notebook = ttk.Notebook(root)
     notebook.pack(expand=True, fill='both', padx=10, pady=10)
-
     fatura_tab = ttk.Frame(notebook)
     sorgu_tab = ttk.Frame(notebook)
-
     notebook.add(fatura_tab, text='Faturadan Veri Girişi')
     notebook.add(sorgu_tab, text='Şantiye Verilerini Görüntüle')
-
     create_fatura_tab(fatura_tab)
     create_sorgu_tab(sorgu_tab)
-
     root.mainloop()
